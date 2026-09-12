@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+.venv-tau2/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Environment
+.env
+.env.local
+
+# Checkpoints and outputs
+checkpoints/
+outputs/
+*.ckpt
+*.pth
+
+# Ray
+ray_temp/
+/tmp/ray/
