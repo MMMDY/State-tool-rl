@@ -237,6 +237,7 @@ Environment variables (set in `configs/.env`):
 - **Telecom low Pass@K**: Dual-control pushes difficulty into communication. Check for tool ownership violations, premature `done`, or missing follow-up questions
 
 ## Acknowledgments
+- [Tau2-RL-Pipeline](https://github.com/jbarnes850/Tau2-RL-Pipeline/tree/main) - This project is based on this work.
 
 - [slime](https://github.com/THUDM/slime) - RL training framework
 - [tau2-bench](https://github.com/sierra-research/tau2-bench) - Multi-turn agent benchmark
