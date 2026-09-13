@@ -181,14 +181,26 @@ def build_tau2_agent_system_prompt(
     domain: str,
     policy: str,
     tools_openai: list[dict[str, Any]],
+    include_tool_schema: bool = True,
+    use_structured_tool_calls: bool = False,
 ) -> str:
     if USE_COMPRESSED:
         compressed = get_compressed_policy(domain)
         if compressed:
             policy = compressed
 
-    tools_text = format_tools_json_schema(tools_openai)
-    return f"""## Output Format
+    tools_section = ""
+    if include_tool_schema:
+        tools_section = f"## Available Tools\n{format_tools_json_schema(tools_openai)}\n"
+    if use_structured_tool_calls:
+        output_format = """## Tool Use
+Use the provided function-calling interface for tool actions. Call exactly one available
+function per turn, with arguments that satisfy its JSON schema. Do not write XML tags
+such as `<tool_call>` in message content. For a customer-facing turn, send a normal
+assistant response instead of a function call.
+"""
+    else:
+        output_format = """## Output Format
 Every turn: exactly ONE tool call in this format:
 <tool_call>
 {{"name": "tool_name", "arguments": {{"param": "value"}}}}
@@ -197,6 +209,8 @@ Every turn: exactly ONE tool call in this format:
 Special actions:
 - respond: <tool_call>{{"name": "respond", "arguments": {{"content": "message"}}}}</tool_call>
 - done: <tool_call>{{"name": "done", "arguments": {{}}}}</tool_call>
+"""
+    return f"""{output_format}
 
 ---
 
@@ -204,11 +218,10 @@ You are a {domain} customer support agent. Complete the user's task following th
 
 {policy}
 
-## Available Tools
-{tools_text}
+{tools_section}
 
 ## Rules
-- One tool call per turn (no plain text responses)
+- One tool call per turn, unless sending a customer-facing response
 - Authenticate user before state changes
 - Confirm before modifications
 - Communicate all relevant details to the user

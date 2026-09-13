@@ -32,3 +32,9 @@ outputs/
 # Ray
 ray_temp/
 /tmp/ray/
+
+# Generated environment reports
+reports/doctor/
+
+# Local compatibility run artifacts
+sglang_storage/

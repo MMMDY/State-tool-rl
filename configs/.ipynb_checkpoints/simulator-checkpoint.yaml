@@ -1,0 +1,9 @@
+# Simulator model configuration used by eval/eval_passk.py.
+# API credentials and endpoint remain in third_party/tau2-bench/.env.
+model: openai/deepseek-flash
+sampling:
+  temperature: 0.7
+thinking:
+  enabled: false
+  # DeepSeek uses this only when thinking is enabled.
+  reasoning_effort: high

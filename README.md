@@ -121,20 +121,78 @@ Download the [GRPO checkpoint](https://huggingface.co/Jarrodbarnes/Qwen3-4B-tau2
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 python3 -m sglang.launch_server \
   --model-path Jarrodbarnes/Qwen3-4B-tau2-grpo-v1 \
-  --host 0.0.0.0 --port 30000 --tp 2 --mem-fraction-static 0.70
+  --host 0.0.0.0 --port 30000 --tp 2 --mem-fraction-static 0.70 \
+  --served-model-name qwen3-4b \
+  --tool-call-parser qwen25 --reasoning-parser qwen3
 ```
 
 **Terminal 2: Evaluation** (requires `OPENAI_API_KEY` for user simulator):
 ```bash
 python3 eval/eval_passk.py \
-  --hf-checkpoint Jarrodbarnes/Qwen3-4B-tau2-grpo-v1 \
-  --sglang-url http://127.0.0.1:30000/generate \
+  --sglang-url http://127.0.0.1:30000 \
+  --sglang-model qwen3-4b \
   --domains airline,retail,telecom --task-split test --num-samples 4 \
-  --temperature 0.8 --top-p 1.0 --top-k 20 \
   --output "${TAU2_OUT_DIR}/eval_pass4.json"
 ```
 
 Takes ~2 hours on 2xH100. Results are stochastic; expect Pass@4 in the 55-60% range.
+The JSON report includes a credential-redacted `configuration` block and one shared
+`trajectory_context` per task (tools). Each attempt references a compact role-based
+`trajectory_file`, a JSON array matching `example_trajectory.md`: its first two
+`system` turns separately contain the policy and simulator prompts, followed by only
+`user`, `assistant`, and `tool` turns without repeated request metadata. Assistant
+text and function calls are always separate: the `content` field never contains a
+native `<tool_call>` block; calls are normalized into `tool_calls`.
+
+Every invocation groups all artifacts under a directory named after the requested
+report stem. For example, `--output outputs/eval_pass4.json` creates:
+
+```text
+outputs/eval_pass4/
+├── eval_pass4.json       # final aggregate report, written only when complete
+├── evaluation.log        # evaluator progress and summary
+├── checkpoint.json       # atomic resumability state
+├── task_results/         # one atomic progress/result JSON per task
+└── trajectories/         # one compact role-based JSON per sample
+```
+
+Qwen3-4B evaluation enables thinking by default and sends
+`enable_thinking=true` to SGLang. Its non-greedy default sampling profile is
+temperature 0.6, top-p 0.95, top-k 20, min-p 0. Its main completion and
+independent format-repair budgets are both 2048 tokens, so reasoning has room
+to reach an action. Use `--no-enable-thinking` for the non-thinking profile:
+temperature 0.7, top-p 0.8, top-k 20, min-p 0, with 1200-token budgets.
+`--max-new-tokens` and `--repair-max-new-tokens` override these independently.
+Explicit sampling flags override the sampling defaults, except temperature must
+remain greater than zero. The two profiles are versioned in
+[`configs/qwen3-4b.yaml`](configs/qwen3-4b.yaml); select another file with
+`--policy-config PATH`.
+
+The simulator's reasoning is disabled by default. Use
+`--user-enable-thinking` to enable it; for DeepSeek this sends
+`reasoning_effort=high` and `extra_body.thinking.type=enabled`. Every report
+records both policy and simulator thinking states, the simulator sampling
+parameters, and the exact extra-body settings used. Each assistant trajectory
+turn and attempt result also records `finish_reason`, usage, reasoning-content
+length, and an explicit `reasoning_only` / `reasoning_only_length_truncated`
+diagnostic when the model exhausts output before producing an action. Normal
+customer-facing text is replayed to the policy verbatim; Tau2's internal
+`respond` shim is never added to the model transcript. Any model-emitted
+function absent from the current tools schema is recorded under
+`invalid_tool_calls` and repaired, never executed as an environment tool.
+
+Simulator model settings are kept in
+[`configs/simulator.yaml`](configs/simulator.yaml). API endpoint and credentials
+remain in the ignored tau2 `.env` file. Override the simulator settings file
+with `--simulator-config PATH` when running another model configuration.
+
+Evaluation runs up to 16 tasks concurrently by default (`--max-concurrency 16`).
+Each finished sample atomically writes both its trajectory JSON and its per-task
+result; each completed task also updates an atomic checkpoint. If the process is
+interrupted, rerun exactly the same command with the same `--output` path:
+completed tasks and already written samples are reused, and only missing samples
+are evaluated. The aggregate summary and final report are calculated only after
+every requested task completes.
 
 ---
 

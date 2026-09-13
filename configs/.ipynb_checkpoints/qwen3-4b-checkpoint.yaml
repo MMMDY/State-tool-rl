@@ -1,0 +1,18 @@
+# Qwen3-4B policy inference profiles for the SGLang Chat Completions evaluator.
+# Select with --enable-thinking (default) or --no-enable-thinking.
+model: qwen3-4b
+profiles:
+  thinking:
+    enable_thinking: true
+    sampling:
+      temperature: 0.6
+      top_p: 0.95
+      top_k: 20
+      min_p: 0.0
+  non_thinking:
+    enable_thinking: false
+    sampling:
+      temperature: 0.7
+      top_p: 0.8
+      top_k: 20
+      min_p: 0.0
