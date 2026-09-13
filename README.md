@@ -1,306 +1,169 @@
-# Training Multi-Turn Tool-Use Agents with GRPO
+# State Tool RL
 
-[![Model](https://img.shields.io/badge/HF-Model-yellow?logo=huggingface)](https://huggingface.co/Jarrodbarnes/Qwen3-4B-tau2-grpo-v1)
-[![Dataset](https://img.shields.io/badge/HF-Dataset-yellow?logo=huggingface)](https://huggingface.co/datasets/Jarrodbarnes/tau2-sft-seed-v3)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+面向多轮工具调用智能体的状态感知强化学习训练与评测项目。项目以
+[tau2-bench](https://github.com/sierra-research/tau2-bench) 的 airline、retail、telecom
+任务为环境，并使用 [SLIME](https://github.com/THUDM/slime) 训练基础设施。
 
-A 4B parameter model achieving **57.1% Pass@4** on tau2-bench (test split), 4x better than the base model and competitive with models 6-60x larger.
+## 核心思路
 
-<p align="center">
-  <img src="public/performance-chart.jpeg" alt="Performance comparison" width="600">
-</p>
-
-<p align="center">
-  <img src="public/slime-pipeline-tau2.jpeg" alt="Training pipeline" width="700">
-</p>
-
-*Three-stage training pipeline (SFT -> rejection sampling -> GRPO) for multi-turn tool-use agents.*
-
-Everything is open source: [training data](https://huggingface.co/datasets/Jarrodbarnes/tau2-sft-seed-v3), [checkpoints](https://huggingface.co/Jarrodbarnes/Qwen3-4B-tau2-grpo-v1), and this repository.
-
----
-
-## Credit Assignment in Multi-Turn Tool-Use
-
-In a telecom troubleshooting task, the agent guides a user through 20+ turns of diagnostics before solving their MMS issue. At step 15, the agent asks the user to grant app permissions, a critical action. But the final reward only arrives at step 20.
-
-How does the model know step 15 mattered?
-
-Standard outcome-based rewards (0/1) provide essentially zero gradient across intermediate steps. The model sees no signal until task completion. For complex tool-use, this is catastrophic. Early SFT attempts achieved 8.57% on tau2-bench, which is actually *worse* than the unprompted baseline of 14.3%.
-
-## Method
-
-### Stage 1: SFT (Teaching Protocol)
-
-Before a model can *optimize* tool-use, it must understand the rules:
-
-1. **Turn structure**: One action per turn, wait for environment response
-2. **Tool schemas**: 30+ tools across domains with complex argument structures
-3. **Dual-control**: In telecom, the agent coaches users through diagnostics rather than executing them
-
-Without SFT, RL training thrashes. With SFT on filtered trajectories, we reach 27% on test, which gives the model enough competence to explore productively.
-
-### Stage 2: Rejection Sampling (RFT)
-
-After SFT, the model can complete tasks but inconsistently. Sampling multiple rollouts and keeping only successes concentrates the training distribution on viable strategies:
-
-1. Sample 4-8 attempts per task at temperature 0.8
-2. Keep trajectories where `reward >= 1.0`
-3. For tasks with no successes, keep highest `partial_score` if >= 0.6
-
-The published [tau2-sft-seed-v3](https://huggingface.co/datasets/Jarrodbarnes/tau2-sft-seed-v3) dataset results from this filtering.
-
-### Stage 3: GRPO + Turn-Level Reward Shaping
-
-GRPO solves credit assignment through two mechanisms:
-
-**Group-based advantage estimation**: For each prompt, sample K trajectories, score them, and train the model to increase probability of high-reward actions relative to the group average. The model learns "this action was better than my other attempts" rather than "this action is good in absolute terms."
-
-**Dense reward shaping**: Tau2-bench provides turn-level evaluation (action checks, communication checks, environment assertions). We extract partial scores and shape rewards:
-
-```python
-shaped_reward = task_reward + alpha * partial_score
-```
-
-This provides gradient at every turn, not just at task completion.
-
-## Results
-
-| Stage | Overall | Airline | Retail | Telecom |
-|-------------------------------|---------|---------|--------|---------|
-| Baseline (Qwen3-4B-Instruct) | 14.3% | 5.0% | 16.0% | 20.0% |
-| SFT | 8.57% | 5.0% | 20.0% | 0.0% |
-| SFT + RFT | 27.0% | 20.0% | 50.0% | 7.5% |
-| GRPO (Pass@1, greedy) | 32.9% | 15.0% | 76.0% | 4.0% |
-| **GRPO (Pass@4)** | **57.1%** | **50.0%** | **76.0%** | **44.0%** |
-
-The 24.2 percentage point gain from Pass@1 to Pass@4 shows that RL-trained models benefit from inference-time exploration. They learn multiple viable strategies instead of overfitting to one path.
-
-[Training logs (WandB)](https://wandb.ai/jbarnes850-near-protocol/tau2-cookbook)
-
----
-
-## Quick Start
-
-All scripts use `slimerl/slime:latest` container:
-
-```bash
-docker pull slimerl/slime:latest
-docker run --gpus all --rm -it \
-  -v "$(pwd)":/workspace/tau2-rl-pipeline \
-  -w /workspace/tau2-rl-pipeline \
-  slimerl/slime:latest
-
-# Inside container
-export TAU2_ROOT=/workspace/tau2-rl-pipeline
-export TAU2_OUT_DIR="${TAU2_ROOT}/outputs"
-mkdir -p "${TAU2_OUT_DIR}"
-
-# Install tau2-bench
-git clone https://github.com/sierra-research/tau2-bench.git "${TAU2_OUT_DIR}/_external/tau2-bench"
-cd "${TAU2_OUT_DIR}/_external/tau2-bench"
-git checkout 337326e62d8e0ca74c353b004a9c5d748e0ba914
-pip install -e . --no-deps
-export TAU2_DATA_DIR="${TAU2_OUT_DIR}/_external/tau2-bench/data"
-cd "${TAU2_ROOT}"
-
-# Runtime dependencies
-pip install gymnasium addict deepdiff fs langfuse plotly pydantic-argparse redis \
-  scikit-learn seaborn tenacity watchdog "litellm==1.65.0"
-
-# API keys (required for user simulator)
-cp configs/.env.template configs/.env  # ADD OPENAI_API_KEY
-set -a && source configs/.env && set +a
-```
-
-## Reproduce Pass@4
-
-Download the [GRPO checkpoint](https://huggingface.co/Jarrodbarnes/Qwen3-4B-tau2-grpo-v1) and run evaluation:
-
-**Terminal 1: Policy server** (use `--tp 1` on single GPU):
-```bash
-CUDA_VISIBLE_DEVICES=0,1 python3 -m sglang.launch_server \
-  --model-path Jarrodbarnes/Qwen3-4B-tau2-grpo-v1 \
-  --host 0.0.0.0 --port 30000 --tp 2 --mem-fraction-static 0.70 \
-  --served-model-name qwen3-4b \
-  --tool-call-parser qwen25 --reasoning-parser qwen3
-```
-
-**Terminal 2: Evaluation** (requires `OPENAI_API_KEY` for user simulator):
-```bash
-python3 eval/eval_passk.py \
-  --sglang-url http://127.0.0.1:30000 \
-  --sglang-model qwen3-4b \
-  --domains airline,retail,telecom --task-split test --num-samples 4 \
-  --output "${TAU2_OUT_DIR}/eval_pass4.json"
-```
-
-Takes ~2 hours on 2xH100. Results are stochastic; expect Pass@4 in the 55-60% range.
-The JSON report includes a credential-redacted `configuration` block and one shared
-`trajectory_context` per task (tools). Each attempt references a compact role-based
-`trajectory_file`, a JSON array matching `example_trajectory.md`: its first two
-`system` turns separately contain the policy and simulator prompts, followed by only
-`user`, `assistant`, and `tool` turns without repeated request metadata. Assistant
-text and function calls are always separate: the `content` field never contains a
-native `<tool_call>` block; calls are normalized into `tool_calls`.
-
-Every invocation groups all artifacts under a directory named after the requested
-report stem. For example, `--output outputs/eval_pass4.json` creates:
+多轮任务的最终成败通常只在结束时给出。State Tool RL 从环境状态检查中提取动作、沟通
+和环境断言的完成度，构造更密集的训练信号：
 
 ```text
-outputs/eval_pass4/
-├── eval_pass4.json       # final aggregate report, written only when complete
-├── evaluation.log        # evaluator progress and summary
-├── checkpoint.json       # atomic resumability state
-├── task_results/         # one atomic progress/result JSON per task
-└── trajectories/         # one compact role-based JSON per sample
+shaped_reward = task_reward + alpha(domain) × partial_score
 ```
 
-Qwen3-4B evaluation enables thinking by default and sends
-`enable_thinking=true` to SGLang. Its non-greedy default sampling profile is
-temperature 0.6, top-p 0.95, top-k 20, min-p 0. Its main completion and
-independent format-repair budgets are both 2048 tokens, so reasoning has room
-to reach an action. Use `--no-enable-thinking` for the non-thinking profile:
-temperature 0.7, top-p 0.8, top-k 20, min-p 0, with 1200-token budgets.
-`--max-new-tokens` and `--repair-max-new-tokens` override these independently.
-Explicit sampling flags override the sampling defaults, except temperature must
-remain greater than zero. The two profiles are versioned in
-[`configs/qwen3-4b.yaml`](configs/qwen3-4b.yaml); select another file with
-`--policy-config PATH`.
+随后在同一 prompt 的多条 rollout 上计算 GRPO 优势；课程策略会降低已解决和极难任务的
+权重。Telecom 场景会提高沟通维度的权重，以适应由用户执行诊断操作的 dual-control 约束。
 
-The simulator's reasoning is disabled by default. Use
-`--user-enable-thinking` to enable it; for DeepSeek this sends
-`reasoning_effort=high` and `extra_body.thinking.type=enabled`. Every report
-records both policy and simulator thinking states, the simulator sampling
-parameters, and the exact extra-body settings used. Each assistant trajectory
-turn and attempt result also records `finish_reason`, usage, reasoning-content
-length, and an explicit `reasoning_only` / `reasoning_only_length_truncated`
-diagnostic when the model exhausts output before producing an action. Normal
-customer-facing text is replayed to the policy verbatim; Tau2's internal
-`respond` shim is never added to the model transcript. Any model-emitted
-function absent from the current tools schema is recorded under
-`invalid_tool_calls` and repaired, never executed as an environment tool.
+## 功能
 
-Simulator model settings are kept in
-[`configs/simulator.yaml`](configs/simulator.yaml). API endpoint and credentials
-remain in the ignored tau2 `.env` file. Override the simulator settings file
-with `--simulator-config PATH` when running another model configuration.
+- 多轮 rollout：将 Qwen 工具调用转换为 tau2 环境动作，格式错误时会进行一次修复。
+- 状态感知奖励：解析动作、沟通、环境断言和数据库检查，形成部分得分。
+- 领域自适应与课程采样：奖励系数、部分得分权重和任务权重均可配置。
+- 双环境运行：SGLang 服务与 tau2/SLIME 训练环境分离，避免依赖冲突。
+- 可恢复评测：每个 task 和 trajectory 原子落盘，重跑可复用已完成结果。
+- 可审计报告：记录采样、thinking、完成原因、轨迹和奖励组成，并脱敏凭证字段。
 
-Evaluation runs up to 16 tasks concurrently by default (`--max-concurrency 16`).
-Each finished sample atomically writes both its trajectory JSON and its per-task
-result; each completed task also updates an atomic checkpoint. If the process is
-interrupted, rerun exactly the same command with the same `--output` path:
-completed tasks and already written samples are reused, and only missing samples
-are evaluated. The aggregate summary and final report are calculated only after
-every requested task completes.
+## 项目结构
 
----
+```text
+configs/                  policy 与用户模拟器配置
+eval/eval_passk.py        SGLang policy 的 tau2 Pass@k 评测器
+requirements/             Python 3.12 / CUDA 12.8 锁定依赖与安装说明
+scripts/00_doctor.sh      环境、GPU、依赖、端口与子模块检查
+scripts/start_policy.sh   启动待评测的 policy 服务
+scripts/start_user_sim.sh 启动训练用用户模拟器
+scripts/train_sft.sh      SFT 训练入口
+scripts/train_grpo.sh     GRPO 训练入口
+tau2_rl_pipeline/         环境适配、动作解析、prompt、reward、rollout、任务索引
+EVAL.md                   已登记的评测基线
+```
 
-## Train from Scratch
+## 环境准备
 
-### Prerequisites
-
-**1. Download base model and training data:**
+目标环境为 Linux、Python 3.12、CUDA 12.8 与 NVIDIA GPU。完整的原生安装步骤与锁定依赖
+见 [requirements/README.md](requirements/README.md)。克隆时初始化固定版本子模块：
 
 ```bash
-huggingface-cli download Qwen/Qwen3-4B-Instruct-2507 \
-  --local-dir "${TAU2_OUT_DIR}/models/Qwen3-4B-Instruct-2507"
-
-mkdir -p "${TAU2_OUT_DIR}/data/sft1"
-huggingface-cli download Jarrodbarnes/tau2-sft-seed-v3 \
-  --local-dir "${TAU2_OUT_DIR}/data/sft1" --repo-type dataset
-export TAU2_SFT_DATA_DIR="${TAU2_OUT_DIR}/data/sft1"
-export SFT_DATA_JSONL="${TAU2_SFT_DATA_DIR}/tau2_sft_merged_v3_rft.jsonl"
+git clone --recurse-submodules https://github.com/MMMDY/State-tool-rl.git
+cd State-tool-rl
+git submodule update --init --recursive
 ```
 
-**2. Convert to Megatron format:**
+项目使用两套虚拟环境：`.venv` 仅承载 SGLang policy/user-simulator 服务；`.venv-tau2`
+承载 tau2、Ray、SLIME 和 Megatron 训练。不要混用两套依赖。
+
+复制并填写配置（使用云端用户模拟器或 Judge 时需填写 API key）：
 
 ```bash
-cd /root/slime
-source scripts/models/qwen3-4B-Instruct-2507.sh
-python3 tools/convert_hf_to_torch_dist.py \
-  --hf-checkpoint "${TAU2_OUT_DIR}/models/Qwen3-4B-Instruct-2507" \
-  --save "${TAU2_OUT_DIR}/models/Qwen3-4B-Instruct-2507_torch_dist" \
-  ${MODEL_ARGS[@]}
-cd "${TAU2_ROOT}"
+cp configs/.env.example configs/.env
+set -a && source configs/.env && set +a
+bash scripts/00_doctor.sh
 ```
 
-### Stage 1: SFT
+环境检查结果会写入 `reports/doctor/latest.json`。若路径不同，可用 `TAU2_PYTHON` 和
+`SGLANG_PYTHON` 覆盖两套 Python 解释器路径。
+
+## 快速评测
+
+先启动待评测的 policy 服务：
 
 ```bash
-bash scripts/train_sft.sh
+MODEL_DIR=/path/to/checkpoint GPUS=0 TP=1 bash scripts/start_policy.sh
 ```
 
-For a smaller debug run: `SFT_DATA_JSONL="${TAU2_SFT_DATA_DIR}/seed_sft_v3.jsonl"`
+在另一个终端执行评测：
 
-### Stage 2: GRPO
-
-**Generate task indices:**
 ```bash
-python3 tau2_rl_pipeline/tasks.py \
-  --local_dir "${TAU2_OUT_DIR}/tasks" \
-  --domains airline,retail,telecom --splits train
+.venv-tau2/bin/python eval/eval_passk.py \
+  --sglang-url http://127.0.0.1:30000 \
+  --sglang-model qwen3-4b \
+  --domains airline,retail,telecom \
+  --task-split test \
+  --num-samples 4 \
+  --output outputs/eval_test_k4.json
 ```
 
-**Start user simulator** (separate terminal, distinct GPUs):
+默认 policy profile 位于 [configs/qwen3-4b.yaml](configs/qwen3-4b.yaml)，默认启用
+thinking；加 `--no-enable-thinking` 使用非 thinking 配置。用户模拟器配置位于
+[configs/simulator.yaml](configs/simulator.yaml)。
+
+输出结构如下：
+
+```text
+outputs/eval_test_k4/
+├── eval_test_k4.json     # 汇总报告，仅全部完成后生成
+├── checkpoint.json       # 可恢复状态
+├── task_results/         # 每个任务的原子结果
+└── trajectories/         # 每个 sample 的紧凑轨迹
+```
+
+`Pass@k` 使用 tau2 官方 `compute_metrics()` 定义；`best_of_k_success` 只是“至少一条
+rollout 成功”的诊断指标，不能与 Pass@k 混用。历史评测登记在 [EVAL.md](EVAL.md)。
+
+## 训练流程
+
+### 1. 准备任务
+
+生成训练 task 索引：
+
 ```bash
-GPUS=2,3 bash scripts/start_user_sim.sh
+.venv-tau2/bin/python tau2_rl_pipeline/tasks.py \
+  --local_dir outputs/tau2/tasks \
+  --domains airline,retail,telecom \
+  --splits train
 ```
 
-**Run GRPO:**
+### 2. SFT
+
+设置 `HF_DIR`、`TORCH_DIST_DIR`、`SFT_DATA_JSONL` 等路径后运行：
+
+```bash
+NUM_GPUS=4 bash scripts/train_sft.sh
+```
+
+脚本以 Qwen chat template 和多轮 loss mask 训练工具调用格式与交互协议。
+
+### 3. GRPO
+
+在与训练 GPU 分开的设备上启动本地用户模拟器：
+
+```bash
+MODEL_DIR=/path/to/user-model GPUS=2 TP=1 bash scripts/start_user_sim.sh
+```
+
+再启动 GRPO：
+
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 NUM_GPUS=2 bash scripts/train_grpo.sh
 ```
 
-Training takes ~2 hours on 8xH100s.
+常用变量：
 
----
+| 变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `TAU2_REWARD_ALPHA` | `0.25` | 部分得分的基础奖励系数 |
+| `TAU2_DOMAIN_ADAPTIVE_ALPHA` | `1` | 是否按领域调整奖励系数 |
+| `TAU2_USE_CURRICULUM` | `1` | 是否启用任务课程权重 |
+| `TAU2_CURRICULUM_MIN_ATTEMPTS` | `5` | 开始调整权重前的最小尝试数 |
+| `TAU2_MAX_STEPS` | `100` | 单条 rollout 最大交互步数 |
+| `TAU2_USER_API_BASE` | `http://127.0.0.1:30001/v1` | 用户模拟器端点 |
 
-## Implementation Details
+完整训练参数见 [scripts/train_grpo.sh](scripts/train_grpo.sh)。
 
-**Dual-control (telecom)**: Diagnostic actions are user-only. The agent instructs rather than executes:
-```
-Agent: "Please toggle airplane mode ON, wait 10 seconds, then OFF."
-User: "Done. Still no data."
-```
+## 排障
 
-**Function calling**: Qwen3 uses `<tool_call>{...}</tool_call>`. Include `</tool_call>` in stop sequences.
+- 先运行 `bash scripts/00_doctor.sh`，确认子模块、两套 Python、CUDA、GPU 和端口正常。
+- SGLang 显存不足时，降低 `MEM_FRACTION` 或 `--max-tokens-per-gpu`，并减少并发请求数。
+- 评测中断后，以相同的 `--output` 路径再次运行即可恢复，不要删除输出目录。
+- policy、用户模拟器与 Ray 的 GPU 应互不重叠；检查 `GPUS` 和 `CUDA_VISIBLE_DEVICES`。
+- `TAU2_CLEANUP=1` 会停止本机 SGLang/Ray 进程，仅在确认没有其他任务使用它们时启用。
 
-**User simulator**: Training uses a local instruct model on port 30001. Evaluation defaults to GPT-4.1-mini.
+## 致谢与许可证
 
-## Configuration
+本项目使用 [tau2-bench](https://github.com/sierra-research/tau2-bench)、
+[SLIME](https://github.com/THUDM/slime) 与 Megatron-LM。原项目说明已保留在
+[README.backup.md](README.backup.md) 供追溯。
 
-Environment variables (set in `configs/.env`):
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TAU2_USER_MODEL` | `openai/Qwen/Qwen3-4B-Instruct-2507` | User simulator model |
-| `TAU2_USER_API_BASE` | `http://127.0.0.1:30001/v1` | User simulator endpoint |
-| `TAU2_MAX_STEPS` | `100` | Max steps per episode |
-| `TAU2_REWARD_ALPHA` | `0.25` | Partial score weight |
-| `TAU2_USE_CURRICULUM` | `1` | Enable curriculum learning |
-
-## Resources
-
-**Models:**
-- [Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507) - Base model
-- [Qwen3-4B-tau2-sft1](https://huggingface.co/Jarrodbarnes/Qwen3-4B-tau2-sft1) - After SFT+RFT
-- [Qwen3-4B-tau2-grpo-v1](https://huggingface.co/Jarrodbarnes/Qwen3-4B-tau2-grpo-v1) - Final checkpoint
-
-**Dataset:** [tau2-sft-seed-v3](https://huggingface.co/datasets/Jarrodbarnes/tau2-sft-seed-v3)
-
-## Troubleshooting
-
-- **SGLang OOM**: Reduce `--mem-fraction-static`, `--max-tokens-per-gpu`, or `--rollout-batch-size`
-- **Telecom low Pass@K**: Dual-control pushes difficulty into communication. Check for tool ownership violations, premature `done`, or missing follow-up questions
-
-## Acknowledgments
-- [Tau2-RL-Pipeline](https://github.com/jbarnes850/Tau2-RL-Pipeline/tree/main) - This project is based on this work.
-
-- [slime](https://github.com/THUDM/slime) - RL training framework
-- [tau2-bench](https://github.com/sierra-research/tau2-bench) - Multi-turn agent benchmark
-- [Qwen3](https://huggingface.co/Qwen) - Base model family
-
-## License
-
-Apache-2.0
+本项目采用 [Apache-2.0](LICENSE) 许可证。
