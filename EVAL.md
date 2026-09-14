@@ -9,3 +9,4 @@ Notes:
 
 - `Tau2 Pass^k` is computed with the official `tau2.metrics.agent_metrics.compute_metrics()` implementation: `C(success_count, k) / C(num_trials, k)`. With four rollouts, `Tau2 Pass^4` is non-zero only when all four succeed.
 - `Best-of-4 success` means at least one successful rollout among four samples. It is a useful sampling diagnostic, but is not Tau2 `Pass^4`.
+- `parse_error` means a policy rollout produced an action that the evaluator could not parse or validate against that task's tool schema (for example, it called an undeclared tool). The evaluator issues one format-repair prompt; if the repaired response is also invalid, the rollout terminates as `parse_error` and is scored as unsuccessful. It is a policy output/tool-use error, not an `infrastructure_error`.
