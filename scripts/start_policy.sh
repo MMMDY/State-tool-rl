@@ -34,6 +34,22 @@ fi
 export PATH="$(dirname "${SGLANG_PYTHON}"):${PATH}"
 export PYTHONPATH="${SCRIPT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 export SGLANG_FORCE_NATIVE_CUDA_OPS="${SGLANG_FORCE_NATIVE_CUDA_OPS:-1}"
+
+# Torch 2.9.1 loads CUDA wheels from both the service venv and the base
+# environment. Make those libraries visible before importing SGLang.
+CUDA_PYTHON_LIB_PATHS=()
+for CUDA_PYTHON_LIB_ROOT in \
+  "${ROOT_DIR}/.venv/lib/python3.12/site-packages/nvidia" \
+  "/root/miniconda3/lib/python3.12/site-packages/nvidia"; do
+  for CUDA_PYTHON_LIB_DIR in "${CUDA_PYTHON_LIB_ROOT}"/*/lib; do
+    [[ -d "${CUDA_PYTHON_LIB_DIR}" ]] || continue
+    CUDA_PYTHON_LIB_PATHS+=("${CUDA_PYTHON_LIB_DIR}")
+  done
+done
+if ((${#CUDA_PYTHON_LIB_PATHS[@]})); then
+  CUDA_PYTHON_LIB_PATH="$(IFS=:; echo "${CUDA_PYTHON_LIB_PATHS[*]}")"
+  export LD_LIBRARY_PATH="${CUDA_PYTHON_LIB_PATH}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
 if [[ ! "${OMP_NUM_THREADS:-}" =~ ^[1-9][0-9]*$ ]]; then
   export OMP_NUM_THREADS=1
 fi

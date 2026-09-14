@@ -6,7 +6,7 @@ import os
 
 
 if os.environ.get("SGLANG_FORCE_NATIVE_CUDA_OPS") == "1":
-    from sglang.srt.custom_op import CustomOp
+    from sglang.srt.utils.custom_op import CustomOp
 
     _dispatch_forward = CustomOp.dispatch_forward
 
