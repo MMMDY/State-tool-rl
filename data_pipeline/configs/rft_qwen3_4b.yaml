@@ -1,0 +1,60 @@
+schema_version: 1
+
+run:
+  root: data_pipeline/RFT_data/runs
+
+model:
+  name: Qwen/Qwen3-4B-Instruct-2507
+  checkpoint: Qwen/Qwen3-4B-Instruct-2507
+  api_base: http://127.0.0.1:30000
+
+tasks:
+  domains: [airline, retail, telecom]
+  split: train
+  task_ids: null
+  max_tasks_per_domain: null
+
+sampling:
+  initial_candidates: 16
+  additional_candidates: 8
+  max_candidates: 32
+  success_quota: 4
+  temperature: 0.7
+  top_p: 0.9
+  max_response_tokens: 4096
+  max_steps: 100
+  max_concurrency: 8
+  thinking: false
+  base_seed: 20260916
+
+simulator:
+  model: openai/deepseek-flash
+  temperature: 0.7
+  thinking: false
+  api_base_env: TAU2_USER_API_BASE
+
+prompt:
+  template: data_pipeline/prompts/system_qwen3_tool_v1.txt
+  schema_version: 1
+
+verification:
+  version: rft-v1
+  strict_replay: true
+  reject_repeated_no_progress: true
+  max_identical_no_progress_calls: 1
+
+export:
+  max_per_task:
+    hard: 4
+    medium: 4
+    easy: 2
+  target_mix:
+    hard: 0.30
+    medium: 0.50
+    easy: 0.20
+  review_per_domain: 50
+  warning_thresholds:
+    replay_success_rate: 1.0
+    duplicate_rate: 0.20
+    easy_share: 0.25
+

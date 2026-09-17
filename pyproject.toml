@@ -32,3 +32,6 @@ Repository = "https://github.com/jbarnes850/Tau2-RL-Pipeline"
 
 [project.scripts]
 tau2-eval = "eval.eval_passk:main"
+sample_rft = "data_pipeline.scripts.sample_rft:main"
+verify_rft = "data_pipeline.scripts.verify_rft:main"
+export_rft = "data_pipeline.scripts.export_rft:main"
