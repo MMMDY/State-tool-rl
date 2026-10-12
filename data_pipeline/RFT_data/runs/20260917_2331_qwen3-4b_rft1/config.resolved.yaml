@@ -1,0 +1,61 @@
+schema_version: 1
+run:
+  root: /root/Project/state-tool-rl/data_pipeline/RFT_data/runs
+model:
+  name: Qwen/Qwen3-4B
+  checkpoint: Qwen/Qwen3-4B
+  api_base: http://127.0.0.1:30000
+tasks:
+  domains:
+  - airline
+  - retail
+  - telecom
+  split: train
+  task_ids: null
+  max_tasks_per_domain: null
+sampling:
+  initial_candidates: 16
+  additional_candidates: 8
+  max_candidates: 32
+  success_quota: 4
+  temperature: 0.7
+  top_p: 0.9
+  max_response_tokens: 4096
+  max_steps: 100
+  max_concurrency: 8
+  thinking: false
+  base_seed: 20260916
+simulator:
+  model: openai/deepseek-flash
+  temperature: 0.7
+  thinking: false
+  api_base_env: TAU2_USER_API_BASE
+prompt:
+  template: /root/Project/state-tool-rl/data_pipeline/prompts/system_qwen3_tool_v1.txt
+  schema_version: 1
+  template_sha256: 71ae4be86a2d125e64415faf65941e82a4b8a9ee393ab71e7b461c37b25da3e5
+verification:
+  version: rft-v1
+  strict_replay: true
+  reject_repeated_no_progress: true
+  max_identical_no_progress_calls: 1
+export:
+  max_per_task:
+    hard: 4
+    medium: 4
+    easy: 2
+  target_mix:
+    hard: 0.3
+    medium: 0.5
+    easy: 0.2
+  review_per_domain: 50
+  warning_thresholds:
+    replay_success_rate: 1.0
+    duplicate_rate: 0.2
+    easy_share: 0.25
+_meta:
+  config_source: /root/Project/state-tool-rl/data_pipeline/configs/rft_qwen3_4b_1.yaml
+  config_sha256: 34e6eb03c5d56a964be0ec3d7f4e7890a9da67571cd62c5d9e1ac819865ddf4b
+  resolved_at_utc: '2026-09-17T15:31:57.874145+00:00'
+  code_commit: 66e53227550b0b30dd5fb2f9c15ae5e29c978309
+  dirty_worktree: true

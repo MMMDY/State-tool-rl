@@ -84,10 +84,44 @@ def fingerprints(record: dict[str, Any]) -> dict[str, str]:
 
 def normalized_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
+    call_id_map: dict[str, str] = {}
+    last_call_id: str | None = None
+    call_index = 0
+
     for message in messages:
         normalized = normalize_value(message)
         if normalized.get("content") is None:
             normalized["content"] = ""
+        raw_calls = message.get("tool_calls") or []
+        normalized_calls = normalized.get("tool_calls") or []
+        for raw_call, call in zip(raw_calls, normalized_calls):
+            deterministic_id = f"call_{call_index}"
+            call_index += 1
+            original_id = str(raw_call.get("id") or "")
+            if original_id:
+                call_id_map[original_id] = deterministic_id
+            call["id"] = deterministic_id
+            function = call.get("function")
+            if isinstance(function, dict):
+                arguments = function.get("arguments", {})
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments) if arguments.strip() else {}
+                    except json.JSONDecodeError:
+                        pass
+                if isinstance(arguments, dict):
+                    function["arguments"] = json.dumps(
+                        normalize_value(arguments),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+            last_call_id = deterministic_id
+        if normalized.get("role") == "tool":
+            original_id = str(message.get("tool_call_id") or "")
+            normalized["tool_call_id"] = call_id_map.get(
+                original_id, last_call_id or "call_unknown"
+            )
         result.append(normalized)
     return result
 

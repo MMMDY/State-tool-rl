@@ -2,6 +2,16 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+exclude = [
+    "**/.ipynb_checkpoints/**",
+    "**/*.orig",
+    "data_pipeline/RFT_data/**",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["tau2_rl_pipeline", "data_pipeline"]
+
 [tool.hatch.metadata]
 allow-direct-references = true
 

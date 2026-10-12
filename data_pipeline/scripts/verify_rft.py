@@ -62,22 +62,23 @@ def main() -> None:
         print("verify_rft: cached input/config; nothing to do")
         return
     processed = existing_ids(args.output) | existing_ids(rejected_path)
-    accepted_rows = []
-    rejected_rows = []
+    accepted_new = 0
+    rejected_new = 0
     for row in iter_jsonl(args.input):
         trajectory_id = str(row.get("trajectory_id"))
         if trajectory_id in processed:
             continue
         verified = verify_record(row, config)
-        (accepted_rows if verified["status"] == "verified" else rejected_rows).append(
-            verified
-        )
-    append_jsonl(args.output, accepted_rows)
-    append_jsonl(rejected_path, rejected_rows)
+        destination = args.output if verified["status"] == "verified" else rejected_path
+        append_jsonl(destination, [verified])
+        if verified["status"] == "verified":
+            accepted_new += 1
+        else:
+            rejected_new += 1
     counts = {
-        "accepted_new": len(accepted_rows),
-        "rejected_new": len(rejected_rows),
-        "processed_total": len(processed) + len(accepted_rows) + len(rejected_rows),
+        "accepted_new": accepted_new,
+        "rejected_new": rejected_new,
+        "processed_total": len(processed) + accepted_new + rejected_new,
     }
     write_stage_metadata(
         meta_path, input_hashes=input_hashes, config_hash=config_hash, counts=counts

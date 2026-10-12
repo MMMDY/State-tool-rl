@@ -283,8 +283,13 @@ async def sample_one(
         os.environ.get(str(endpoint_env), "").strip() if endpoint_env else ""
     )
     if user_endpoint:
+        user_api_key = (
+            os.environ.get("TAU2_USER_API_KEY", "").strip()
+            or os.environ.get("OPENAI_API_KEY", "").strip()
+            or "dummy-key-for-local-server"
+        )
         user_args.update(
-            {"api_base": user_endpoint, "api_key": "dummy-key-for-local-server"}
+            {"api_base": user_endpoint, "api_key": user_api_key}
         )
 
     env = AgentGymEnv(
@@ -437,8 +442,8 @@ async def sample_one(
         error = f"{type(exc).__name__}: {exc}"
 
     schema_hash = sha256_json(tools)
-    prompt_hash = sha256_json(system_prompt)
     task_snapshot = spec.task.model_dump(mode="json")
+    prompt_hash = sha256_json(system_prompt)
     record: dict[str, Any] = {
         "schema_version": 1,
         "run_id": run_id,
@@ -489,7 +494,7 @@ def load_task_specs(config: dict[str, Any]) -> list[TaskSpec]:
     from tau2.registry import registry
 
     task_cfg = config["tasks"]
-    requested_ids = set(task_cfg.get("task_ids") or [])
+    requested_ids = {str(task_id) for task_id in (task_cfg.get("task_ids") or [])}
     maximum = task_cfg.get("max_tasks_per_domain")
     specs: list[TaskSpec] = []
     leakage_ids: set[tuple[str, str]] = set()
@@ -505,7 +510,7 @@ def load_task_specs(config: dict[str, Any]) -> list[TaskSpec]:
         selected = [
             (index, task)
             for index, task in enumerate(tasks)
-            if not requested_ids or task.id in requested_ids
+            if not requested_ids or str(task.id) in requested_ids
         ]
         if maximum is not None:
             selected = selected[: int(maximum)]
@@ -619,9 +624,28 @@ def initialize_run(
 
 
 def _provisionally_qualified(record: dict[str, Any]) -> bool:
+    from data_pipeline.rft.verifier import schema_verifier
+
     if record.get("status") != "raw" or not record.get("terminal", {}).get("success"):
         return False
-    return not any(step.get("flags") for step in record.get("steps") or [])
+    if not schema_verifier(record)["passed"]:
+        return False
+    repeated_no_progress: set[tuple[str, str]] = set()
+    for step in record.get("steps") or []:
+        if step.get("flags"):
+            return False
+        observation = str(step.get("tool_observation") or "").lower()
+        if "error:" in observation or "invalid action" in observation:
+            return False
+        if step.get("tool_call") and step.get("state_hash_before") == step.get(
+            "state_hash_after"
+        ):
+            signature = sha256_json(step["tool_call"])
+            key = (str(step.get("state_hash_before")), signature)
+            if key in repeated_no_progress:
+                return False
+            repeated_no_progress.add(key)
+    return True
 
 
 async def run_sampling(

@@ -14,6 +14,7 @@ HARD_FLAGS = {
     "invalid_schema",
     "wrong_tool",
     "bad_args",
+    "invalid_precondition",
     "ignored_observation",
     "repeated_invalid_action",
     "no_progress",
@@ -101,6 +102,13 @@ def schema_verifier(record: dict[str, Any]) -> dict[str, Any]:
     errors: list[str] = []
     tool_schemas: dict[str, dict[str, Any]] = {}
     raw_schemas = record.get("tools", {}).get("schema") or []
+    if record.get("tools", {}).get("schema_hash") != sha256_json(raw_schemas):
+        flags.append("invalid_schema")
+        errors.append("stored tool schema hash does not match the saved schema")
+    if record.get("system_prompt_hash") != sha256_json(record.get("system_prompt", "")):
+        flags.append("invalid_schema")
+        errors.append("stored system prompt hash does not match the saved prompt")
+
     for item in raw_schemas:
         function = item.get("function") if isinstance(item, dict) else None
         if isinstance(function, dict) and isinstance(function.get("name"), str):
@@ -170,7 +178,13 @@ def _content_value(content: Any) -> Any:
         return content
 
 
-def replay_messages(*, domain: str, task: Any, simulation: Any) -> dict[str, Any]:
+def replay_messages(
+    *,
+    domain: str,
+    task: Any,
+    simulation: Any,
+    expected_step_count: int | None = None,
+) -> dict[str, Any]:
     from tau2.data_model.message import (
         AssistantMessage,
         MultiToolMessage,
@@ -188,6 +202,11 @@ def replay_messages(*, domain: str, task: Any, simulation: Any) -> dict[str, Any
     initial_assistant_count = sum(
         isinstance(message, AssistantMessage) for message in initial_history
     )
+    if expected_step_count is not None:
+        total_assistant_count = sum(
+            isinstance(message, AssistantMessage) for message in messages
+        )
+        initial_assistant_count = max(0, total_assistant_count - expected_step_count)
     assistant_seen = 0
     active_new_step = False
     state_before_first: str | None = None
@@ -213,24 +232,27 @@ def replay_messages(*, domain: str, task: Any, simulation: Any) -> dict[str, Any
             else None
         )
         if calls:
+            following = messages[index + 1] if index + 1 < len(messages) else None
+            multi_results = (
+                following.tool_messages
+                if isinstance(following, MultiToolMessage)
+                else None
+            )
             for call_offset, call in enumerate(calls, 1):
-                result_index = index + call_offset
-                if result_index >= len(messages):
-                    observation_errors.append(
-                        f"tool call {call.name!r} has no following tool result"
-                    )
-                    continue
-                expected = messages[result_index]
-                if isinstance(expected, MultiToolMessage):
-                    expected_items = expected.tool_messages
+                if multi_results is not None:
                     expected = (
-                        expected_items[call_offset - 1]
-                        if call_offset <= len(expected_items)
+                        multi_results[call_offset - 1]
+                        if call_offset <= len(multi_results)
                         else None
+                    )
+                else:
+                    result_index = index + call_offset
+                    expected = (
+                        messages[result_index] if result_index < len(messages) else None
                     )
                 if not isinstance(expected, ToolMessage):
                     observation_errors.append(
-                        f"tool call {call.name!r} is not followed by ToolMessage"
+                        f"tool call {call.name!r} has no matching ToolMessage"
                     )
                     continue
                 actual = environment.get_response(call)
@@ -284,6 +306,7 @@ def terminal_and_replay_verifier(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     from tau2.evaluator.evaluator import EvaluationType, evaluate_simulation
     from tau2.metrics.agent_metrics import is_successful
+    from tau2.registry import registry
 
     terminal_flags: list[str] = []
     replay_flags: list[str] = []
@@ -310,6 +333,37 @@ def terminal_and_replay_verifier(
             },
             {"passed": False, "flags": ["missing_trajectory"], "errors": [str(exc)]},
         )
+
+    if str(simulation.task_id) != str(record["task_id"]):
+        terminal_flags.append("terminal_fail")
+        replay_flags.append("replay_mismatch")
+        errors.append("simulation task_id differs from trajectory task_id")
+
+    initial_payload = (
+        task.initial_state.model_dump(mode="json")
+        if task.initial_state is not None
+        else None
+    )
+    if record.get("env", {}).get("initial_state_snapshot_hash") != sha256_json(
+        initial_payload
+    ):
+        replay_flags.append("replay_mismatch")
+        errors.append(
+            "task initial-state snapshot hash differs from current train task"
+        )
+
+    from tau2.environment.tool import as_tool
+    from tau2.gym.gym_agent import done
+
+    current_environment = registry.get_env_constructor(str(record["domain"]))(
+        solo_mode=False
+    )
+    current_tools = [tool.openai_schema for tool in current_environment.get_tools()]
+    current_tools.append(as_tool(done).openai_schema)
+    if record.get("tools", {}).get("schema_hash") != sha256_json(current_tools):
+        replay_flags.append("replay_mismatch")
+        errors.append("saved tool schema differs from the current domain tool schema")
+
     try:
         reward_info = evaluate_simulation(
             simulation=simulation,
@@ -323,7 +377,10 @@ def terminal_and_replay_verifier(
         if not is_successful(score):
             terminal_flags.append("terminal_fail")
         replay = replay_messages(
-            domain=str(record["domain"]), task=task, simulation=simulation
+            domain=str(record["domain"]),
+            task=task,
+            simulation=simulation,
+            expected_step_count=len(record.get("steps") or []),
         )
         if replay["observation_errors"]:
             replay_flags.append("observation_mismatch")
@@ -395,6 +452,9 @@ def process_verifier(
             continue
         signature = sha256_json([call.get("name"), call.get("arguments")])
         key = (str(before), signature)
+        if index in error_steps:
+            flags.append("invalid_precondition")
+            errors.append(f"step {index}: environment rejected the tool call")
         if index in error_steps or before == after:
             repeated[key] += 1
             if repeated[key] > max_identical_no_progress_calls:

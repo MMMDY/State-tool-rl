@@ -1,0 +1,95 @@
+# Qwen3-4B RFT 数据流水线默认配置。
+# 注释以 # 开头；修改后建议使用新的 run_id。
+schema_version: 1
+
+run:
+  # 正式运行目录；试跑时可复制配置到 /tmp 后修改。
+  root: data_pipeline/RFT_data/runs
+
+model:
+  # 模型服务与 checkpoint 的身份信息。
+  name: Qwen/Qwen3-4B
+  # 必须与 SGLang 的 served model name 一致。
+  checkpoint: Qwen/Qwen3-4B
+  # 写入 raw 和 manifest 的 checkpoint 标识。
+  api_base: http://127.0.0.1:30000
+  # OpenAI 兼容的 SGLang 地址，不要包含 /v1。
+
+tasks:
+  # 任务候选只来自 train；dev/test 仅用于泄漏检查。
+  domains: [airline, retail, telecom]
+  # 要采样的 tau2 domain 列表。
+  split: train
+  task_ids: null
+  # null 表示选择每个 domain 的全部 train 任务。
+  max_tasks_per_domain: null
+  # 试跑可设为 1；null 表示不限制。
+
+sampling:
+  # 候选数按 16 -> 24 -> 32 自适应扩展。
+  initial_candidates: 16
+  # 每题第一批候选数量。
+  additional_candidates: 8
+  # 未达到成功配额时每批追加数量。
+  max_candidates: 32
+  # 每题候选总上限。
+  success_quota: 4
+  # 去重后临时合格轨迹达到此数即停止采样。
+  temperature: 0.7
+  top_p: 0.9
+  # temperature/top_p 会写入每条 raw 记录和 manifest。
+  max_response_tokens: 4096
+  # 达到上限标记 overlong，不静默截断。
+  max_steps: 100
+  # 单条 episode 的最大环境交互步数。
+  # 并发任务数；本次数据采样按要求使用 16。
+  max_concurrency: 16
+  # 并发任务数；受 GPU 和用户模拟器吞吐限制。
+  thinking: false
+  # 当前 RFT 默认关闭思维链，必须保持 false。
+  base_seed: 20260916
+  # 任务级 seed = base_seed + stable_hash(domain/task_id) + rollout_index。
+
+simulator:
+  # tau2 用户模拟器配置。
+  model: openai/deepseek-flash
+  temperature: 0.7
+  thinking: false
+  api_base_env: TAU2_USER_API_BASE
+  # 设置该环境变量后注入本地用户模拟器 API 地址。
+
+prompt:
+  # system prompt 模板及其版本。
+  template: data_pipeline/prompts/system_qwen3_tool_v1.txt
+  # 支持 {domain}、{policy}、{tools_schema} 占位符。
+  schema_version: 1
+
+verification:
+  # 三层规则验证和 strict replay 设置。
+  version: rft-v1
+  strict_replay: true
+  # 重新生成 observation，并检查逐步/终态 state hash。
+  reject_repeated_no_progress: true
+  max_identical_no_progress_calls: 1
+  # 同一状态下相同无进展动作超过此次数即拒绝。
+
+export:
+  # 去重、难度分层、SFT/recovery 导出和质量报告。
+  max_per_task:
+    # 每题按难度限制正样本数。
+    hard: 4
+    medium: 4
+    easy: 2
+  target_mix:
+    # 目标配比只用于报告，不会为了凑比例制造样本。
+    hard: 0.30
+    medium: 0.50
+    easy: 0.20
+  review_per_domain: 50
+  # 每个 domain 的抽检样本上限。
+  warning_thresholds:
+    # 超过阈值时写入 summary.warnings。
+    replay_success_rate: 1.0
+    duplicate_rate: 0.20
+    easy_share: 0.25
+

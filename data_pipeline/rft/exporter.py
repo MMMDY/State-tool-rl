@@ -162,6 +162,20 @@ def export_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _message_prefix(
+    messages: list[dict[str, Any]], *, assistant_turns: int
+) -> list[dict[str, Any]]:
+    prefix: list[dict[str, Any]] = []
+    seen_assistant = 0
+    for message in messages:
+        if message.get("role") == "assistant":
+            if seen_assistant >= assistant_turns:
+                break
+            seen_assistant += 1
+        prefix.append(message)
+    return normalized_messages(prefix)
+
+
 def recovery_row(row: dict[str, Any], difficulty: str) -> dict[str, Any]:
     steps = row.get("steps") or []
     failure_index = len(steps) - 1 if steps else 0
@@ -184,7 +198,9 @@ def recovery_row(row: dict[str, Any], difficulty: str) -> dict[str, Any]:
         "failed_prefix": steps[: failure_index + 1],
         "error_action": failure.get("tool_call") or failure.get("assistant_raw_text"),
         "error_observation": failure.get("tool_observation"),
-        "recovery_context": normalized_messages(list(row.get("messages") or [])),
+        "recovery_context": _message_prefix(
+            list(row.get("messages") or []), assistant_turns=failure_index + 1
+        ),
         "terminal": row.get("terminal") or {},
         "source_run_id": row["run_id"],
         "training_eligible": False,
@@ -277,6 +293,7 @@ def build_summary(
         for row in exported_rows
     ]
     duplicate_rate = 1 - len(set(semantic)) / len(semantic) if semantic else 0.0
+    near_duplicate_rate = _near_duplicate_rate(exported_rows)
     total_exported = len(exported_rows)
     actual_mix = {
         level: difficulty_counts[level] / total_exported if total_exported else 0.0
@@ -295,8 +312,8 @@ def build_summary(
     warnings: list[str] = []
     if replay_success_rate < float(thresholds["replay_success_rate"]):
         warnings.append("verified replay success rate is below threshold")
-    if duplicate_rate >= float(thresholds["duplicate_rate"]):
-        warnings.append("semantic duplicate rate is above threshold")
+    if max(duplicate_rate, near_duplicate_rate) >= float(thresholds["duplicate_rate"]):
+        warnings.append("semantic or text n-gram duplicate rate is above threshold")
     if actual_mix["easy"] > float(thresholds["easy_share"]):
         warnings.append("easy-task share is above threshold")
     return {
@@ -339,6 +356,7 @@ def build_summary(
         ),
         "verified_replay_success_rate": replay_success_rate,
         "semantic_duplicate_rate": duplicate_rate,
+        "text_ngram_near_duplicate_rate": near_duplicate_rate,
         "privacy_findings": _privacy_findings(exported_rows),
         "warnings": warnings,
     }
@@ -411,3 +429,36 @@ def update_manifest(manifest_path: Path, artifacts: dict[str, Path]) -> None:
         if path.exists()
     }
     atomic_write_json(manifest_path, manifest)
+
+
+def _assistant_ngrams(row: dict[str, Any], size: int = 3) -> set[tuple[str, ...]]:
+    text = " ".join(
+        str(message.get("content") or "")
+        for message in row.get("messages") or row.get("prompt") or []
+        if message.get("role") == "assistant"
+    ).lower()
+    tokens = re.findall(r"[a-z0-9_]+", text)
+    if not tokens:
+        return set()
+    if len(tokens) < size:
+        return {tuple(tokens)}
+    return {
+        tuple(tokens[index : index + size]) for index in range(len(tokens) - size + 1)
+    }
+
+
+def _near_duplicate_rate(rows: list[dict[str, Any]], threshold: float = 0.90) -> float:
+    seen: list[set[tuple[str, ...]]] = []
+    duplicates = 0
+    comparable = 0
+    for row in rows:
+        ngrams = _assistant_ngrams(row)
+        if not ngrams:
+            continue
+        comparable += 1
+        if any(
+            len(ngrams & prior) / len(ngrams | prior) >= threshold for prior in seen
+        ):
+            duplicates += 1
+        seen.append(ngrams)
+    return duplicates / comparable if comparable else 0.0

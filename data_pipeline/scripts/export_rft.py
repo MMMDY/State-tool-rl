@@ -78,15 +78,34 @@ def main() -> None:
     validate_no_split_leakage(verified_rows)
     stats = task_statistics(raw_rows, verified_rows, rejected_rows)
     selected, dedupe_counts = deduplicate_and_cap(verified_rows, stats, config)
-    sft_rows = [export_row(row) for row in selected]
+    existing_exported = list(iter_jsonl(args.output))
+    existing_ids = {str(row["trajectory_id"]) for row in existing_exported}
+    existing_per_task: dict[tuple[str, str], int] = {}
+    for row in existing_exported:
+        key = (str(row["domain"]), str(row["task_id"]))
+        existing_per_task[key] = existing_per_task.get(key, 0) + 1
+    appendable = []
+    for row in selected:
+        if str(row["trajectory_id"]) in existing_ids:
+            continue
+        key = (str(row["domain"]), str(row["task_id"]))
+        difficulty = stats[key]["difficulty"]
+        cap = int(config["export"]["max_per_task"][difficulty])
+        if existing_per_task.get(key, 0) >= cap:
+            continue
+        appendable.append(row)
+        existing_per_task[key] = existing_per_task.get(key, 0) + 1
+    sft_rows = [export_row(row) for row in appendable]
     append_unique(args.output, sft_rows, key="trajectory_id")
 
     recovery_rows = []
+    verified_ids = {str(row["trajectory_id"]) for row in verified_rows}
     for row in raw_rows:
         key = (str(row["domain"]), str(row["task_id"]))
         task_stats = stats[key]
-        if task_stats["difficulty"] == "hard" and not row.get("terminal", {}).get(
-            "success"
+        if (
+            task_stats["difficulty"] == "hard"
+            and str(row["trajectory_id"]) not in verified_ids
         ):
             recovery_rows.append(recovery_row(row, "hard"))
     append_unique(recovery_path, recovery_rows, key="trajectory_id")
