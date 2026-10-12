@@ -15,6 +15,7 @@ import httpx
 
 from data_pipeline.rft.io import (
     append_jsonl,
+    append_jsonl_sharded,
     atomic_write_json,
     canonical_json,
     git_commit,
@@ -709,7 +710,7 @@ async def run_sampling(
                     )
                     records.append(record)
                     async with append_lock:
-                        append_jsonl(raw_path, [record])
+                        append_jsonl_sharded(raw_path, [record])
                         counts["new_rollouts"] += 1
                     new_records.append(record)
             return new_records

@@ -35,7 +35,7 @@
   --output data_pipeline/RFT_data/runs/RUN_ID/exports/rft_train.jsonl
 ```
 
-也可以在 editable 安装后使用 `sample_rft`、`verify_rft` 和 `export_rft` 三个 console command。三阶段均可独立重跑；JSONL 是 append-only，单条 rollout 完成后立即 fsync，已存在的 trajectory ID 会跳过。阶段 metadata 记录输入和配置 hash，报告与 manifest 使用原子写入。
+也可以在 editable 安装后使用 `sample_rft`、`verify_rft` 和 `export_rft` 三个 console command。三阶段均可独立重跑；raw rollout 会按每 100 条写入编号分片 `raw.part-*.jsonl`，命令仍可使用逻辑路径 `raw.jsonl` 自动读取全部分片。JSONL 是 append-only，单条 rollout 完成后立即 fsync，已存在的 trajectory ID 会跳过。阶段 metadata 记录所有分片的输入 hash，报告与 manifest 使用原子写入。
 
 ## 采样策略
 

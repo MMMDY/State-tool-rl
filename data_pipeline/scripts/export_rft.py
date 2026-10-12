@@ -27,6 +27,7 @@ from data_pipeline.rft.exporter import (
 from data_pipeline.rft.io import (
     atomic_write_json,
     iter_jsonl,
+    jsonl_input_paths,
     sha256_file,
     sha256_json,
     stage_is_cached,
@@ -60,7 +61,7 @@ def main() -> None:
     review_path = run_root / "reports" / "sample_review.jsonl"
     config_path = args.config or run_root / "config.resolved.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    input_paths = [raw_path, args.verified, rejected_path]
+    input_paths = [*jsonl_input_paths(raw_path), args.verified, rejected_path]
     input_hashes = {
         str(path.resolve()): sha256_file(path) for path in input_paths if path.exists()
     }
@@ -130,7 +131,7 @@ def main() -> None:
     update_manifest(
         run_root / "manifest.json",
         {
-            "raw": raw_path,
+            "raw": jsonl_input_paths(raw_path),
             "verified": args.verified,
             "rejected": rejected_path,
             "rft_train": args.output,

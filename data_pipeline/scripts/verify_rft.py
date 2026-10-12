@@ -17,6 +17,7 @@ from data_pipeline.rft.io import (
     append_jsonl,
     existing_ids,
     iter_jsonl,
+    jsonl_input_paths,
     sha256_file,
     sha256_json,
     stage_is_cached,
@@ -56,7 +57,10 @@ def main() -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     rejected_path = args.rejected or args.output.with_name("rejected.jsonl")
     meta_path = args.output.with_suffix(args.output.suffix + ".meta.json")
-    input_hashes = {str(args.input.resolve()): sha256_file(args.input)}
+    input_hashes = {
+        str(path.resolve()): sha256_file(path)
+        for path in jsonl_input_paths(args.input)
+    }
     config_hash = sha256_json(config)
     if stage_is_cached(meta_path, input_hashes=input_hashes, config_hash=config_hash):
         print("verify_rft: cached input/config; nothing to do")

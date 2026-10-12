@@ -47,8 +47,11 @@ From the repository root:
 After an editable reinstall, the equivalent console commands are `sample_rft`,
 `verify_rft`, and `export_rft`.
 
-All JSONL stage outputs are append-only. A rollout is fsynced immediately after it
-finishes; rerunning the same command skips trajectory IDs already present. Stage
+All JSONL stage outputs are append-only. Raw rollouts are written to numbered
+`raw.part-*.jsonl` files with at most 100 records per file, while commands can
+continue to use the logical `raw.jsonl` path to read all parts. A rollout is
+fsynced immediately after it finishes; rerunning the same command skips trajectory
+IDs already present. Stage
 metadata caches an unchanged input/config hash. Reports and manifests are derived
 metadata and are replaced atomically so they always describe the complete current
 append-only artifacts.

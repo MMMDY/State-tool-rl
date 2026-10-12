@@ -88,7 +88,9 @@ data_pipeline/
 
 ## 5. 轨迹数据 schema
 
-### 5.1 原始 rollout（`raw.jsonl`）
+### 5.1 原始 rollout（逻辑路径 `raw.jsonl`，实际按 `raw.part-*.jsonl` 分片）
+
+每个 raw 分片最多保存 100 条完整 episode，以便单个文件保持在 GitHub 的文件大小限制以内。读取 `raw.jsonl` 时按编号顺序合并所有分片。
 
 每行一个完整 episode，推荐字段：
 

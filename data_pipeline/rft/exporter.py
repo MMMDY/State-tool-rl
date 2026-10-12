@@ -416,18 +416,32 @@ def append_unique(path: Path, rows: Iterable[dict[str, Any]], *, key: str) -> in
     return append_jsonl(path, new_rows)
 
 
-def update_manifest(manifest_path: Path, artifacts: dict[str, Path]) -> None:
+def update_manifest(
+    manifest_path: Path, artifacts: dict[str, Path | list[Path]]
+) -> None:
     manifest = (
         json.loads(manifest_path.read_text(encoding="utf-8"))
         if manifest_path.exists()
         else {}
     )
     manifest["updated_at_utc"] = utc_now()
-    manifest["artifacts"] = {
-        name: {"path": str(path.resolve()), "sha256": sha256_file(path)}
-        for name, path in artifacts.items()
-        if path.exists()
-    }
+    metadata = {}
+    for name, artifact in artifacts.items():
+        paths = artifact if isinstance(artifact, list) else [artifact]
+        existing = [path for path in paths if path.exists()]
+        if not existing:
+            continue
+        if len(existing) == 1:
+            metadata[name] = {
+                "path": str(existing[0].resolve()),
+                "sha256": sha256_file(existing[0]),
+            }
+        else:
+            metadata[name] = {
+                "paths": [str(path.resolve()) for path in existing],
+                "sha256": [sha256_file(path) for path in existing],
+            }
+    manifest["artifacts"] = metadata
     atomic_write_json(manifest_path, manifest)
 
 

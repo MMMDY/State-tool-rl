@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from collections.abc import Iterable, Iterator
@@ -16,6 +17,7 @@ import yaml
 
 SENSITIVE_MARKERS = ("api_key", "authorization", "password", "secret")
 SENSITIVE_NAMES = {"token", "access_token", "refresh_token", "id_token"}
+JSONL_SHARD_SIZE = 100
 
 
 def utc_now() -> str:
@@ -222,9 +224,18 @@ def _without_resolution_time(value: Any) -> Any:
     return value
 
 
-def iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
-    if not path.exists():
-        return
+def jsonl_input_paths(path: Path) -> list[Path]:
+    """Return a logical JSONL input and its numbered shards, if present."""
+
+    shards = sorted(path.parent.glob(f"{path.stem}.part-*{path.suffix}"))
+    if path.exists() and shards:
+        raise ValueError(f"Both unsplit and sharded JSONL files exist for {path}")
+    if shards:
+        return shards
+    return [path] if path.exists() else []
+
+
+def _iter_jsonl_file(path: Path) -> Iterator[dict[str, Any]]:
     with path.open(encoding="utf-8") as input_file:
         for line_number, line in enumerate(input_file, 1):
             if not line.strip():
@@ -238,6 +249,11 @@ def iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
             if not isinstance(row, dict):
                 raise TypeError(f"JSONL row at {path}:{line_number} must be an object")
             yield row
+
+
+def iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
+    for input_path in jsonl_input_paths(path):
+        yield from _iter_jsonl_file(input_path)
 
 
 def append_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> int:
@@ -255,6 +271,96 @@ def append_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> int:
             os.fsync(output_file.fileno())
             count += 1
     return count
+
+
+def _next_shard_path(path: Path, paths: list[Path]) -> Path:
+    indexes = []
+    prefix = f"{path.stem}.part-"
+    for candidate in paths:
+        name = candidate.name
+        if name.startswith(prefix) and name.endswith(path.suffix):
+            index = name[len(prefix) : -len(path.suffix)]
+            if index.isdigit():
+                indexes.append(int(index))
+    next_index = max(indexes, default=-1) + 1
+    return path.with_name(f"{path.stem}.part-{next_index:03d}{path.suffix}")
+
+
+def _split_jsonl_file(path: Path, *, shard_size: int) -> None:
+    """Migrate a legacy unsplit JSONL file without leaving partial shards."""
+
+    temporary_dir = Path(tempfile.mkdtemp(prefix=f".{path.stem}.", dir=path.parent))
+    temporary_paths: list[Path] = []
+    moved_paths: list[Path] = []
+    try:
+        output_file = None
+        row_count = 0
+        try:
+            with path.open(encoding="utf-8") as input_file:
+                for line in input_file:
+                    if not line.strip():
+                        continue
+                    if row_count % shard_size == 0:
+                        if output_file is not None:
+                            output_file.flush()
+                            os.fsync(output_file.fileno())
+                            output_file.close()
+                        temporary_path = temporary_dir / (
+                            f"part-{len(temporary_paths):03d}{path.suffix}"
+                        )
+                        temporary_paths.append(temporary_path)
+                        output_file = temporary_path.open("w", encoding="utf-8")
+                    output_file.write(line if line.endswith("\n") else f"{line}\n")
+                    row_count += 1
+        finally:
+            if output_file is not None and not output_file.closed:
+                output_file.flush()
+                os.fsync(output_file.fileno())
+                output_file.close()
+        for temporary_path in temporary_paths:
+            final_path = path.with_name(
+                f"{path.stem}.part-{len(moved_paths):03d}{path.suffix}"
+            )
+            os.replace(temporary_path, final_path)
+            moved_paths.append(final_path)
+        path.unlink()
+    except BaseException:
+        for moved_path in moved_paths:
+            moved_path.unlink(missing_ok=True)
+        raise
+    finally:
+        shutil.rmtree(temporary_dir, ignore_errors=True)
+
+
+def append_jsonl_sharded(
+    path: Path,
+    rows: Iterable[dict[str, Any]],
+    *,
+    shard_size: int = JSONL_SHARD_SIZE,
+) -> int:
+    """Append rows to numbered JSONL shards, starting a new file every N rows."""
+
+    if shard_size <= 0:
+        raise ValueError("shard_size must be positive")
+    existing_shards = sorted(path.parent.glob(f"{path.stem}.part-*{path.suffix}"))
+    if path.exists():
+        if existing_shards:
+            raise ValueError(f"Both unsplit and sharded JSONL files exist for {path}")
+        _split_jsonl_file(path, shard_size=shard_size)
+    pending = list(rows)
+    written = 0
+    while pending:
+        paths = sorted(path.parent.glob(f"{path.stem}.part-*{path.suffix}"))
+        target = paths[-1] if paths else _next_shard_path(path, paths)
+        current_count = sum(1 for _ in _iter_jsonl_file(target)) if target.exists() else 0
+        if current_count >= shard_size:
+            target = _next_shard_path(path, paths)
+            current_count = 0
+        available = shard_size - current_count
+        batch = pending[:available]
+        written += append_jsonl(target, batch)
+        del pending[: len(batch)]
+    return written
 
 
 def existing_ids(path: Path, key: str = "trajectory_id") -> set[str]:
